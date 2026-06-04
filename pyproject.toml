@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-collective"
+version = "0.1.0"
+description = "Multi-agent collective learning system for Hermes Agent"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Hermes Collective"}]
+keywords = ["hermes", "agent", "multi-agent", "collective", "knowledge-sharing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+    "gitpython>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov", "ruff"]
+
+[project.scripts]
+hermes-collective = "hermes_collective.cli:main"
+
+[project.entry-points."hermes.plugins"]
+collective = "hermes_collective.plugin:CollectivePlugin"
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*", "templates*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
