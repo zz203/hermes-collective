@@ -139,25 +139,25 @@ hermes-collective run --role manager --repo ~/collective-repo --legacy
 # Employee daily reflection (6 PM Mon-Fri)
 hermes cron create "0 18 * * 1-5" \
   --name collective-employee-alice \
-  --skills employee-daily \
-  --prompt "Run employee-daily. Collective: ~/.hermes/collective-alice. Agent: alice."
+  --skill employee-daily \
+  "Run employee-daily. Collective: ~/.hermes/collective-alice. Agent: alice."
 
 # Employee daily sync (9 AM)
 hermes cron create "0 9 * * *" \
   --name collective-sync-alice \
-  --prompt "cd ~/.hermes/collective-alice && git pull origin main && hermes-collective sync --repo ~/.hermes/collective-alice"
+  "cd ~/.hermes/collective-alice && git pull origin main && hermes-collective sync --repo ~/.hermes/collective-alice"
 
 # Manager cycle (10 PM Mon-Fri)
 hermes cron create "0 22 * * 1-5" \
   --name collective-manager-overseer \
-  --skills manager-cycle \
-  --prompt "Run manager-cycle. Collective: ~/collective-repo. Agent: overseer."
+  --skill manager-cycle \
+  "Run manager-cycle. Collective: ~/collective-repo. Agent: overseer."
 
 # Weekly pruning (Sunday 9 AM)
 hermes cron create "0 9 * * 0" \
   --name collective-pruning \
-  --prompt "Run quality pruning. Repo: ~/collective-repo." \
-  --skills collective/quality-pruning
+  --skill collective/quality-pruning \
+  "Run quality pruning. Repo: ~/collective-repo."
 ```
 
 ## Commands

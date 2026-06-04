@@ -601,10 +601,10 @@ def _auto_create_crons(name: str, role: str, local_path: Path) -> dict:
                 "hermes", "cron", "create",
                 cron_def["schedule"],
                 "--name", cron_def["name"],
-                "--prompt", cron_def["prompt"],
             ]
             if cron_def["skills"]:
-                cmd.extend(["--skills", cron_def["skills"]])
+                cmd.extend(["--skill", cron_def["skills"]])
+            cmd.append(cron_def["prompt"])
 
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
@@ -659,8 +659,8 @@ def _build_cron_instructions(
                 "",
                 '   hermes cron create "0 18 * * *" \\\\',
                 f'     --name collective-employee-{name} \\\\',
-                '     --skills employee-daily \\\\',
-                f'     --prompt "Run the end-of-work collective report as {name}. '
+                '     --skill employee-daily \\\\',
+                f'     "Run the end-of-work collective report as {name}. '
                 f'Collective repo: {local_path}. '
                 f'Use {name}_reflection_checkpoint in memory. '
                 f'Follow the employee-daily skill (v2 incremental reflection)."',
@@ -669,7 +669,7 @@ def _build_cron_instructions(
                 "",
                 '   hermes cron create "0 9 * * *" \\\\',
                 f'     --name collective-sync-{name} \\\\',
-                f'     --prompt "Pull latest from collective at {local_path} '
+                f'     "Pull latest from collective at {local_path} '
                 f'and sync skills: cd {local_path} && git pull origin main '
                 f'&& hermes-collective sync --repo {local_path}"',
                 "",
@@ -681,8 +681,8 @@ def _build_cron_instructions(
                 "",
                 '   hermes cron create "0 22 * * *" \\\\',
                 f'     --name collective-manager-{name} \\\\',
-                '     --skills manager-cycle \\\\',
-                f'     --prompt "Run the manager aggregation cycle as {name}. '
+                '     --skill manager-cycle \\\\',
+                f'     "Run the manager aggregation cycle as {name}. '
                 f'Collective repo: {local_path}. '
                 f'Follow the manager-cycle skill."',
                 "",
@@ -695,8 +695,8 @@ def _build_cron_instructions(
         "",
         "3. Set up weekly pruning (any agent can run this):",
         '   hermes cron create "0 9 * * 0" --name collective-pruning \\\\',
-        f'     --prompt "Run collective quality pruning. Repo: {local_path}." \\\\',
-        '     --skills collective/quality-pruning',
+        f'     --skill collective/quality-pruning \\\\',
+        f'     "Run collective quality pruning. Repo: {local_path}."',
         "",
     ]
 
