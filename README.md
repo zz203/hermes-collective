@@ -167,17 +167,17 @@ If the server uses a host alias or non-default SSH port, configure it on the
 employee machine:
 
 ```sshconfig
-Host A6000
-  HostName 10.70.155.47
-  Port 11516
-  User zhouzl
+Host collective-server
+  HostName collective-server.example.com
+  Port 2222
+  User gituser
 ```
 
 Then test passwordless access and Git access:
 
 ```bash
-ssh A6000
-git ls-remote ssh://A6000/srv/hermes/collective.git
+ssh collective-server
+git ls-remote ssh://collective-server/srv/hermes/collective.git
 ```
 
 Employees connect to the same shared repository over SSH:
