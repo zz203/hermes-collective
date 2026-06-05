@@ -1,11 +1,13 @@
 """Tests for cli.py - Click CLI commands."""
 
+from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
-from hermes_collective.cli import main
+from hermes_collective.cli import main, _ensure_profile_gateway_service, _use_profile
 
 
 @pytest.fixture
@@ -38,6 +40,226 @@ class TestCLISetup:
         with patch("click.confirm", return_value=False):
             result = runner.invoke(main, ["setup"], input="\n\n\n\n")
             assert result.exit_code == 0
+
+    def test_setup_creates_employee_crons_in_profile(self, runner, tmp_path):
+        """Should create employee cron jobs during setup using the new profile."""
+        join_result = {
+            "local_path": str(tmp_path / "collective"),
+            "installed_skills": ["employee-daily", "quality-pruning"],
+            "cron_results": {"success": [], "failed": [], "skipped": []},
+        }
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd)
+            return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with (
+            patch("click.confirm", return_value=True),
+            patch("hermes_collective.cli._run", side_effect=fake_run),
+            patch("hermes_collective.cli.join_employee", return_value=join_result),
+            patch("hermes_collective.cli._install_skills", return_value=[]),
+            patch(
+                "hermes_collective.cli._ensure_profile_gateway_service",
+                return_value={"success": ["install", "start"], "failed": []},
+            ) as gateway_service,
+            patch(
+                "hermes_collective.cli._create_crons",
+                return_value={
+                    "success": [
+                        "collective-employee-alice",
+                        "collective-sync-alice",
+                        "collective-pruning-alice",
+                    ],
+                    "failed": [],
+                    "skipped": [],
+                },
+            ) as create_crons,
+        ):
+            result = runner.invoke(
+                main,
+                ["setup"],
+                input=f"employee\nalice\n{tmp_path / 'source'}\n17\n8\n",
+            )
+
+        assert result.exit_code == 0
+        assert ["hermes", "profile", "use", "alice"] in run_calls
+        gateway_service.assert_called_once_with("alice")
+        create_crons.assert_called_once()
+        kwargs = create_crons.call_args.kwargs
+        assert kwargs["name"] == "alice"
+        assert kwargs["role"] == "employee"
+        assert kwargs["profile"] == "alice"
+        assert kwargs["reflect_hour"] == 17
+        assert kwargs["pull_hour"] == 8
+        assert isinstance(kwargs["local_path"], Path)
+        assert "Gateway service and cron jobs were configured in the Hermes profile" in result.output
+
+    def test_setup_creates_manager_crons_in_profile(self, runner, tmp_path):
+        """Should create manager cron jobs during setup using the new profile."""
+        join_result = {
+            "local_path": str(tmp_path / "collective"),
+            "installed_skills": ["manager-cycle", "quality-pruning"],
+            "cron_results": {"success": [], "failed": [], "skipped": []},
+        }
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd)
+            return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with (
+            patch("click.confirm", return_value=True),
+            patch("hermes_collective.cli._run", side_effect=fake_run),
+            patch("hermes_collective.cli.join_manager", return_value=join_result),
+            patch("hermes_collective.cli._install_skills", return_value=[]),
+            patch(
+                "hermes_collective.cli._ensure_profile_gateway_service",
+                return_value={"success": ["install", "start"], "failed": []},
+            ) as gateway_service,
+            patch(
+                "hermes_collective.cli._create_crons",
+                return_value={
+                    "success": [
+                        "collective-manager-overseer",
+                        "collective-pruning-overseer",
+                    ],
+                    "failed": [],
+                    "skipped": [],
+                },
+            ) as create_crons,
+        ):
+            result = runner.invoke(
+                main,
+                ["setup"],
+                input=f"manager\noverseer\n{tmp_path / 'source'}\n21\n",
+            )
+
+        assert result.exit_code == 0
+        assert ["hermes", "profile", "use", "overseer"] in run_calls
+        gateway_service.assert_called_once_with("overseer")
+        create_crons.assert_called_once()
+        kwargs = create_crons.call_args.kwargs
+        assert kwargs["name"] == "overseer"
+        assert kwargs["role"] == "manager"
+        assert kwargs["profile"] == "overseer"
+        assert kwargs["manage_hour"] == 21
+        assert "Gateway service and cron jobs were configured in the Hermes profile" in result.output
+
+    def test_setup_reports_gateway_failure_without_blocking_crons(self, runner, tmp_path):
+        """Should keep creating cron jobs if gateway service setup fails."""
+        join_result = {
+            "local_path": str(tmp_path / "collective"),
+            "installed_skills": ["employee-daily", "quality-pruning"],
+            "cron_results": {"success": [], "failed": [], "skipped": []},
+        }
+
+        with (
+            patch("click.confirm", return_value=True),
+            patch(
+                "hermes_collective.cli._run",
+                return_value=CompletedProcess(["hermes"], 0, stdout="", stderr=""),
+            ),
+            patch("hermes_collective.cli.join_employee", return_value=join_result),
+            patch("hermes_collective.cli._install_skills", return_value=[]),
+            patch(
+                "hermes_collective.cli._ensure_profile_gateway_service",
+                return_value={
+                    "success": [],
+                    "failed": [("install", "systemd unavailable")],
+                },
+            ),
+            patch(
+                "hermes_collective.cli._create_crons",
+                return_value={
+                    "success": ["collective-employee-alice"],
+                    "failed": [],
+                    "skipped": [],
+                },
+            ) as create_crons,
+        ):
+            result = runner.invoke(
+                main,
+                ["setup"],
+                input=f"employee\nalice\n{tmp_path / 'source'}\n18\n0\n",
+            )
+
+        assert result.exit_code == 0
+        create_crons.assert_called_once()
+        assert "hermes -p alice gateway install" in result.output
+        assert "profile gateway service needs attention" in result.output
+
+    def test_setup_reports_profile_use_failure_without_blocking_setup(self, runner, tmp_path):
+        """Should keep configuring gateway and cron jobs if profile switching fails."""
+        join_result = {
+            "local_path": str(tmp_path / "collective"),
+            "installed_skills": ["employee-daily", "quality-pruning"],
+            "cron_results": {"success": [], "failed": [], "skipped": []},
+        }
+
+        def fake_run(cmd, **kwargs):
+            if cmd == ["hermes", "profile", "use", "alice"]:
+                return CompletedProcess(cmd, 1, stdout="", stderr="cannot switch")
+            return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with (
+            patch("click.confirm", return_value=True),
+            patch("hermes_collective.cli._run", side_effect=fake_run),
+            patch("hermes_collective.cli.join_employee", return_value=join_result),
+            patch("hermes_collective.cli._install_skills", return_value=[]),
+            patch(
+                "hermes_collective.cli._ensure_profile_gateway_service",
+                return_value={"success": ["install", "start"], "failed": []},
+            ),
+            patch(
+                "hermes_collective.cli._create_crons",
+                return_value={
+                    "success": ["collective-employee-alice"],
+                    "failed": [],
+                    "skipped": [],
+                },
+            ),
+        ):
+            result = runner.invoke(
+                main,
+                ["setup"],
+                input=f"employee\nalice\n{tmp_path / 'source'}\n18\n0\n",
+            )
+
+        assert result.exit_code == 0
+        assert "hermes profile use alice" in result.output
+        assert "default profile switching failed" in result.output
+
+    def test_ensure_profile_gateway_service_installs_and_starts(self):
+        """Should install and start gateway service for the selected profile."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+        with patch("hermes_collective.cli._run", side_effect=fake_run):
+            result = _ensure_profile_gateway_service("alice")
+
+        assert result == {"success": ["install", "start"], "failed": []}
+        assert calls == [
+            ["hermes", "-p", "alice", "gateway", "install"],
+            ["hermes", "-p", "alice", "gateway", "start"],
+        ]
+
+    def test_use_profile_switches_default_profile(self):
+        """Should run Hermes profile use for the selected profile."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+        with patch("hermes_collective.cli._run", side_effect=fake_run):
+            result = _use_profile("alice")
+
+        assert result == {"success": True, "error": ""}
+        assert calls == [["hermes", "profile", "use", "alice"]]
 
 
 class TestCLIInit:

@@ -511,6 +511,182 @@ def _create_sync_script(local_path: Path, name: str, role: str, repo_url: str) -
     return str(script_path)
 
 
+def _cron_definitions(
+    name: str,
+    role: str,
+    local_path: Path,
+    reflect_hour: int = 18,
+    pull_hour: int | None = 9,
+    manage_hour: int = 22,
+    include_pruning: bool = True,
+) -> list[dict[str, str]]:
+    """Build Hermes cron definitions for an agent."""
+    cron_defs = []
+    if role == "employee":
+        cron_defs.append(
+            {
+                "schedule": f"0 {reflect_hour} * * *",
+                "name": f"collective-employee-{name}",
+                "skills": "employee-daily",
+                "prompt": (
+                    f"Run the end-of-work collective report as {name}. "
+                    f"Collective repo: {local_path}. "
+                    f"Use {name}_reflection_checkpoint in memory. "
+                    f"Follow the employee-daily skill (v2 incremental reflection)."
+                ),
+            }
+        )
+        if pull_hour is not None and pull_hour > 0:
+            cron_defs.append(
+                {
+                    "schedule": f"0 {pull_hour} * * *",
+                    "name": f"collective-sync-{name}",
+                    "skills": "",
+                    "prompt": (
+                        f"Pull latest from collective at {local_path} "
+                        f"and sync skills: cd {local_path} && git pull origin main "
+                        f"&& hermes-collective sync --repo {local_path}"
+                    ),
+                }
+            )
+    else:  # manager
+        cron_defs.append(
+            {
+                "schedule": f"0 {manage_hour} * * *",
+                "name": f"collective-manager-{name}",
+                "skills": "manager-cycle",
+                "prompt": (
+                    f"Run the manager aggregation cycle as {name}. "
+                    f"Collective repo: {local_path}. "
+                    f"Follow the manager-cycle skill."
+                ),
+            }
+        )
+
+    if include_pruning:
+        cron_defs.append(
+            {
+                "schedule": "0 9 * * 0",
+                "name": f"collective-pruning-{name}",
+                "skills": "collective/quality-pruning",
+                "prompt": (
+                    f"Run collective quality pruning. Repo: {local_path}. "
+                    f"Follow the quality-pruning skill."
+                ),
+            }
+        )
+
+    return cron_defs
+
+
+def _cron_create_command(
+    cron_def: dict[str, str],
+    local_path: Path,
+    profile: str | None = None,
+) -> list[str]:
+    """Build a Hermes cron create command, optionally pinned to a profile."""
+    cmd = ["hermes"]
+    if profile:
+        cmd.extend(["-p", profile])
+    cmd.extend([
+        "cron", "create",
+        cron_def["schedule"],
+        "--name", cron_def["name"],
+        "--workdir", str(local_path),
+    ])
+    if cron_def["skills"]:
+        cmd.extend(["--skill", cron_def["skills"]])
+    cmd.append(cron_def["prompt"])
+    return cmd
+
+
+def _cron_list_command(profile: str | None = None) -> list[str]:
+    """Build a Hermes cron list command, optionally pinned to a profile."""
+    cmd = ["hermes"]
+    if profile:
+        cmd.extend(["-p", profile])
+    cmd.extend(["cron", "list", "--all"])
+    return cmd
+
+
+def _create_crons(
+    name: str,
+    role: str,
+    local_path: Path,
+    profile: str | None = None,
+    reflect_hour: int = 18,
+    pull_hour: int | None = 9,
+    manage_hour: int = 22,
+    include_pruning: bool = True,
+    skip_names: set[str] | None = None,
+) -> dict:
+    """
+    Create Hermes cron jobs.
+
+    When profile is provided, jobs are created with `hermes -p <profile> cron create`.
+    """
+    results = {"success": [], "failed": [], "skipped": []}
+    skip_names = skip_names or set()
+
+    cron_defs = _cron_definitions(
+        name=name,
+        role=role,
+        local_path=local_path,
+        reflect_hour=reflect_hour,
+        pull_hour=pull_hour,
+        manage_hour=manage_hour,
+        include_pruning=include_pruning,
+    )
+
+    try:
+        existing = subprocess.run(
+            _cron_list_command(profile),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        existing_jobs = existing.stdout if existing.returncode == 0 else ""
+    except FileNotFoundError:
+        return {
+            "success": [],
+            "failed": [
+                (cron_def["name"], "`hermes` command not found")
+                for cron_def in cron_defs
+                if cron_def["name"] not in skip_names
+            ],
+            "skipped": [],
+        }
+
+    for cron_def in cron_defs:
+        if cron_def["name"] in skip_names:
+            results["skipped"].append(cron_def["name"])
+            continue
+
+        if cron_def["name"] in existing_jobs:
+            results["skipped"].append(cron_def["name"])
+            logger.info("Cron already exists: %s", cron_def["name"])
+            continue
+
+        try:
+            result = subprocess.run(
+                _cron_create_command(cron_def, local_path=local_path, profile=profile),
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                results["success"].append(cron_def["name"])
+                logger.info("✅ Cron created: %s", cron_def["name"])
+            else:
+                err = (result.stderr or result.stdout).strip()
+                results["failed"].append((cron_def["name"], err))
+                logger.warning("⚠ Failed to create cron '%s': %s", cron_def["name"], err)
+        except Exception as e:
+            results["failed"].append((cron_def["name"], str(e)))
+            logger.warning("⚠ Could not create cron '%s': %s", cron_def["name"], e)
+
+    return results
+
+
 def _auto_create_crons(name: str, role: str, local_path: Path) -> dict:
     """
     Attempt to auto-create cron jobs via hermes CLI.
@@ -518,7 +694,7 @@ def _auto_create_crons(name: str, role: str, local_path: Path) -> dict:
     Returns {"success": [...], "failed": [...]} listing which crons were created.
     Only attempts if running inside a Hermes session (detected by HERMES_HOME env var).
     """
-    results = {"success": [], "failed": []}
+    results = {"success": [], "failed": [], "skipped": []}
 
     # Check if we're in a Hermes session
     hermes_home = os.environ.get("HERMES_HOME")
@@ -538,89 +714,7 @@ def _auto_create_crons(name: str, role: str, local_path: Path) -> dict:
         )
         return results
 
-    cron_defs = []
-    if role == "employee":
-        cron_defs.extend([
-            {
-                "schedule": "0 18 * * *",
-                "name": f"collective-employee-{name}",
-                "skills": "employee-daily",
-                "prompt": (
-                    f"Run the end-of-work collective report as {name}. "
-                    f"Collective repo: {local_path}. "
-                    f"Use {name}_reflection_checkpoint in memory. "
-                    f"Follow the employee-daily skill (v2 incremental reflection)."
-                ),
-            },
-            {
-                "schedule": "0 9 * * *",
-                "name": f"collective-sync-{name}",
-                "skills": "",
-                "prompt": (
-                    f"Pull latest from collective at {local_path} "
-                    f"and sync skills: cd {local_path} && git pull origin main "
-                    f"&& hermes-collective sync --repo {local_path}"
-                ),
-            },
-            {
-                "schedule": "0 9 * * 0",
-                "name": f"collective-pruning-{name}",
-                "skills": "collective/quality-pruning",
-                "prompt": (
-                    f"Run collective quality pruning. Repo: {local_path}. "
-                    f"Follow the quality-pruning skill."
-                ),
-            },
-        ])
-    else:  # manager
-        cron_defs.extend([
-            {
-                "schedule": "0 22 * * *",
-                "name": f"collective-manager-{name}",
-                "skills": "manager-cycle",
-                "prompt": (
-                    f"Run the manager aggregation cycle as {name}. "
-                    f"Collective repo: {local_path}. "
-                    f"Follow the manager-cycle skill."
-                ),
-            },
-            {
-                "schedule": "0 9 * * 0",
-                "name": f"collective-pruning-{name}",
-                "skills": "collective/quality-pruning",
-                "prompt": (
-                    f"Run collective quality pruning. Repo: {local_path}. "
-                    f"Follow the quality-pruning skill."
-                ),
-            },
-        ])
-
-    for cron_def in cron_defs:
-        try:
-            cmd = [
-                "hermes", "cron", "create",
-                cron_def["schedule"],
-                "--name", cron_def["name"],
-            ]
-            if cron_def["skills"]:
-                cmd.extend(["--skill", cron_def["skills"]])
-            cmd.append(cron_def["prompt"])
-
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                results["success"].append(cron_def["name"])
-                logger.info("✅ Cron created: %s", cron_def["name"])
-            else:
-                results["failed"].append((cron_def["name"], result.stderr.strip()))
-                logger.warning(
-                    "⚠ Failed to create cron '%s': %s",
-                    cron_def["name"], result.stderr.strip(),
-                )
-        except Exception as e:
-            results["failed"].append((cron_def["name"], str(e)))
-            logger.warning("⚠ Could not create cron '%s': %s", cron_def["name"], e)
-
-    return results
+    return _create_crons(name=name, role=role, local_path=local_path)
 
 
 def _build_cron_instructions(
@@ -695,7 +789,7 @@ def _build_cron_instructions(
         "",
         "3. Set up weekly pruning (any agent can run this):",
         '   hermes cron create "0 9 * * 0" --name collective-pruning \\\\',
-        f'     --skill collective/quality-pruning \\\\',
+        '     --skill collective/quality-pruning \\\\',
         f'     "Run collective quality pruning. Repo: {local_path}."',
         "",
     ]

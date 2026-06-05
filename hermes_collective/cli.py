@@ -42,6 +42,8 @@ from .bootstrap import (
     join_employee,
     join_manager,
     _install_skills,
+    _create_crons,
+    _cron_definitions,
 )
 from .quality import get_quality_report, prune
 
@@ -61,6 +63,123 @@ def _resolve_path(path: str) -> Path:
 def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     """Run a command, return result. Prints stdout/stderr live."""
     return subprocess.run(cmd, check=False, text=True, **kwargs)
+
+
+def _merge_cron_results(*results: dict | None) -> dict:
+    """Merge cron result dictionaries returned by bootstrap helpers."""
+    merged = {"success": [], "failed": [], "skipped": []}
+    for result in results:
+        if not result:
+            continue
+        for key in merged:
+            merged[key].extend(result.get(key, []))
+    return merged
+
+
+def _print_cron_results(cron_results: dict) -> None:
+    """Print a concise cron setup summary."""
+    if cron_results["success"]:
+        click.echo("   Created:")
+        for job_name in cron_results["success"]:
+            click.echo(f"     ✅ {job_name}")
+
+    if cron_results["skipped"]:
+        click.echo("   Already present / skipped:")
+        for job_name in cron_results["skipped"]:
+            click.echo(f"     • {job_name}")
+
+    if cron_results["failed"]:
+        click.echo("   Failed:")
+        for job_name, error in cron_results["failed"]:
+            click.echo(f"     ⚠ {job_name}: {error}")
+
+
+def _print_manual_cron_commands(
+    name: str,
+    role: str,
+    local_path: Path,
+    reflect_hour: int = 18,
+    pull_hour: int | None = 9,
+    manage_hour: int = 22,
+) -> None:
+    """Print profile-aware manual cron create commands."""
+    cron_defs = _cron_definitions(
+        name=name,
+        role=role,
+        local_path=local_path,
+        reflect_hour=reflect_hour,
+        pull_hour=pull_hour,
+        manage_hour=manage_hour,
+        include_pruning=True,
+    )
+
+    click.echo()
+    click.echo("   Manual fallback commands:")
+    for cron_def in cron_defs:
+        click.echo()
+        click.echo(f"   hermes -p {name} cron create \"{cron_def['schedule']}\" \\")
+        click.echo(f"     --name {cron_def['name']} \\")
+        click.echo(f"     --workdir {local_path} \\")
+        if cron_def["skills"]:
+            click.echo(f"     --skill {cron_def['skills']} \\")
+        click.echo(f"     \"{cron_def['prompt']}\"")
+
+
+def _ensure_profile_gateway_service(profile: str) -> dict:
+    """Install and start the Hermes gateway service for a profile."""
+    result = {"success": [], "failed": []}
+    commands = [
+        ("install", ["hermes", "-p", profile, "gateway", "install"]),
+        ("start", ["hermes", "-p", profile, "gateway", "start"]),
+    ]
+
+    for action, cmd in commands:
+        completed = _run(cmd, capture_output=True)
+        if completed.returncode == 0:
+            result["success"].append(action)
+        else:
+            error = (completed.stderr or completed.stdout or f"exit {completed.returncode}").strip()
+            result["failed"].append((action, error))
+
+    return result
+
+
+def _print_gateway_results(profile: str, gateway_results: dict) -> None:
+    """Print gateway setup results and fallback commands."""
+    if not gateway_results["failed"]:
+        click.echo("   Gateway service installed and started.")
+        return
+
+    if gateway_results["success"]:
+        click.echo(f"   Gateway steps completed: {', '.join(gateway_results['success'])}")
+
+    click.echo("   Gateway service setup needs attention:")
+    for action, error in gateway_results["failed"]:
+        click.echo(f"     ⚠ {action}: {error}")
+    click.echo("   Manual fallback commands:")
+    click.echo(f"     hermes -p {profile} gateway install")
+    click.echo(f"     hermes -p {profile} gateway start")
+
+
+def _use_profile(profile: str) -> dict:
+    """Make the Hermes profile the sticky default profile."""
+    completed = _run(["hermes", "profile", "use", profile], capture_output=True)
+    if completed.returncode == 0:
+        return {"success": True, "error": ""}
+
+    error = (completed.stderr or completed.stdout or f"exit {completed.returncode}").strip()
+    return {"success": False, "error": error}
+
+
+def _print_profile_use_result(profile: str, profile_result: dict) -> None:
+    """Print profile switching result and fallback command."""
+    if profile_result["success"]:
+        click.echo(f"   Default Hermes profile set to '{profile}'.")
+        return
+
+    click.echo(f"   ⚠ Could not switch default profile: {profile_result['error']}")
+    click.echo("   Manual fallback command:")
+    click.echo(f"     hermes profile use {profile}")
 
 
 # ── setup (interactive wizard) ─────────────────────────────────────
@@ -181,7 +300,12 @@ def setup_wizard():
         click.echo("   Continuing anyway...")
     else:
         click.echo(f"   ✅ Profile '{name}' created at ~/.hermes/profiles/{name}/")
-        click.echo(f"   Wrapper: {name} chat  (runs hermes --profile {name})")
+        click.echo(f"   Wrapper: {name} chat  (runs hermes -p {name})")
+
+    click.echo()
+    click.echo(f"🔁 Switching default Hermes profile to '{name}'...")
+    profile_use_result = _use_profile(name)
+    _print_profile_use_result(name, profile_use_result)
 
     # ── Step 6: Clone and register ──
     click.echo()
@@ -209,51 +333,59 @@ def setup_wizard():
         click.echo(f"❌ Failed to register: {e}", err=True)
         sys.exit(1)
 
-    # ── Step 7: Setup cron jobs ──
+    # ── Step 7: Setup profile gateway service ──
+    click.echo()
+    click.echo("🔌 Setting up Hermes Gateway service...")
+    click.echo(f"   Installing service for Hermes profile '{name}'...")
+    gateway_results = _ensure_profile_gateway_service(name)
+    _print_gateway_results(name, gateway_results)
+
+    # ── Step 8: Setup cron jobs ──
     click.echo()
     click.echo("⏰ Setting up cron jobs...")
-    click.echo()
-    click.echo("   Run these commands inside a Hermes session to activate:")
-    click.echo()
+    click.echo(f"   Creating jobs in Hermes profile '{name}'...")
+
+    precreated_crons = result.get("cron_results", {})
 
     if role == "employee":
-        # Reflection cron
-        click.echo(f"   # 1. Daily reflection (runs at {reflect_time}:00)")
-        click.echo(f"   hermes cron create \"0 {reflect_time} * * *\" \\\\")
-        click.echo(f"     --name collective-employee-{name} \\\\")
-        click.echo("     --skills employee-daily \\\\")
-        click.echo(f"     --prompt \"Run the end-of-work collective report as {name}."
-                   f" Collective repo: {local_path}."
-                   f" Use {name}_reflection_checkpoint in memory."
-                   f" Follow the employee-daily skill.\"")
-
-        click.echo()
-        if pull_time > 0:
-            click.echo(f"   # 2. Daily sync — pull collective updates (runs at {pull_time}:00)")
-            click.echo(f"   hermes cron create \"0 {pull_time} * * *\" \\\\")
-            click.echo(f"     --name collective-sync-{name} \\\\")
-            click.echo(f"     --prompt \"Pull latest from collective repo at {local_path}"
-                       f" and sync active skills to ~/.hermes/skills/collective/."
-                       f" Run: cd {local_path} && git pull origin main."
-                       f" Then run hermes-collective sync --repo {local_path}.\"")
-            click.echo()
-
-        click.echo("   # Or run manually to test:")
-        click.echo("   hermes cron run <employee-job-id>")
+        setup_crons = _create_crons(
+            name=name,
+            role=role,
+            local_path=local_path,
+            profile=name,
+            reflect_hour=reflect_time,
+            pull_hour=pull_time,
+        )
+        cron_results = _merge_cron_results(precreated_crons, setup_crons)
+        _print_cron_results(cron_results)
 
     else:  # manager
-        click.echo(f"   # 1. Daily management cycle (runs at {manage_time}:00)")
-        click.echo(f"   hermes cron create \"0 {manage_time} * * *\" \\\\")
-        click.echo(f"     --name collective-manager-{name} \\\\")
-        click.echo("     --skills manager-cycle \\\\")
-        click.echo(f"     --prompt \"Run the manager aggregation cycle as {name}."
-                   f" Collective repo: {local_path}."
-                   f" Follow the manager-cycle skill.\"")
-        click.echo()
-        click.echo("   # Or run manually to test:")
-        click.echo("   hermes cron run <manager-job-id>")
+        setup_crons = _create_crons(
+            name=name,
+            role=role,
+            local_path=local_path,
+            profile=name,
+            manage_hour=manage_time,
+        )
+        cron_results = _merge_cron_results(precreated_crons, setup_crons)
+        _print_cron_results(cron_results)
 
-    # ── Step 8: Done ──
+    if cron_results["failed"]:
+        _print_manual_cron_commands(
+            name=name,
+            role=role,
+            local_path=local_path,
+            reflect_hour=reflect_time if role == "employee" else 18,
+            pull_hour=pull_time if role == "employee" else 9,
+            manage_hour=manage_time if role == "manager" else 22,
+        )
+
+    click.echo()
+    click.echo("   Test with:")
+    click.echo(f"     hermes -p {name} cron list")
+    click.echo(f"     hermes -p {name} cron run <job-id>")
+
+    # ── Step 9: Done ──
     click.echo()
     click.echo("══════════════════════════════════════════")
     click.echo(f"  ✅ {name} ({role}) is ready!")
@@ -263,8 +395,14 @@ def setup_wizard():
     click.echo(f"  Repo:       {local_path}")
     click.echo(f"  Identity:   {local_path}/agents/{name}/identity.yaml")
     click.echo()
-    click.echo("  Run the cron setup commands above in a Hermes session.")
-    click.echo("  Then test: hermes cron run <job-id>")
+    if cron_results["failed"]:
+        click.echo("  Some cron jobs still need manual setup; see the commands above.")
+    elif not profile_use_result["success"]:
+        click.echo("  Gateway and cron jobs were configured, but default profile switching failed.")
+    elif gateway_results["failed"]:
+        click.echo("  Cron jobs were configured, but the profile gateway service needs attention.")
+    else:
+        click.echo("  Gateway service and cron jobs were configured in the Hermes profile.")
     click.echo()
 
 

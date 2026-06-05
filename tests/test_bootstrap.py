@@ -4,6 +4,8 @@ Tests for bootstrap.py — repo initialization, agent join, skill install.
 
 import yaml
 from pathlib import Path
+from subprocess import CompletedProcess
+from unittest.mock import patch
 
 from hermes_collective.bootstrap import (
     init_collective,
@@ -11,6 +13,8 @@ from hermes_collective.bootstrap import (
     join_manager,
     _install_skills,
     _safe_push,
+    _create_crons,
+    _cron_create_command,
 )
 
 
@@ -225,3 +229,82 @@ class TestSafePush:
         # temp_repo has no remote by default
         _safe_push(temp_repo, "alice", "employee")
         # No exception means pass
+
+
+class TestCronCreation:
+    """Tests for Hermes cron creation helpers."""
+
+    def test_cron_create_command_uses_profile_and_workdir(self, temp_dir):
+        """Should build a profile-aware Hermes cron command."""
+        cron_def = {
+            "schedule": "0 17 * * *",
+            "name": "collective-employee-alice",
+            "skills": "employee-daily",
+            "prompt": "Run daily.",
+        }
+
+        cmd = _cron_create_command(cron_def, local_path=temp_dir, profile="alice")
+
+        assert cmd[:3] == ["hermes", "-p", "alice"]
+        assert cmd[3:6] == ["cron", "create", "0 17 * * *"]
+        assert "--workdir" in cmd
+        assert str(temp_dir) in cmd
+        assert "--skill" in cmd
+        assert "employee-daily" in cmd
+
+    def test_create_crons_uses_profile_and_custom_employee_hours(self, temp_dir):
+        """Should create employee cron jobs in the requested Hermes profile."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[-2:] == ["list", "--all"]:
+                return CompletedProcess(cmd, 0, stdout="", stderr="")
+            return CompletedProcess(cmd, 0, stdout="created", stderr="")
+
+        with patch("hermes_collective.bootstrap.subprocess.run", side_effect=fake_run):
+            result = _create_crons(
+                name="alice",
+                role="employee",
+                local_path=temp_dir,
+                profile="alice",
+                reflect_hour=17,
+                pull_hour=8,
+            )
+
+        assert result["failed"] == []
+        assert result["success"] == [
+            "collective-employee-alice",
+            "collective-sync-alice",
+            "collective-pruning-alice",
+        ]
+        assert calls[0] == ["hermes", "-p", "alice", "cron", "list", "--all"]
+        create_calls = calls[1:]
+        assert all(call[:3] == ["hermes", "-p", "alice"] for call in create_calls)
+        assert any("0 17 * * *" in call for call in create_calls)
+        assert any("0 8 * * *" in call for call in create_calls)
+        assert all("--workdir" in call for call in create_calls)
+
+    def test_create_crons_skips_existing_jobs(self, temp_dir):
+        """Should not recreate jobs already present in the profile."""
+
+        def fake_run(cmd, **kwargs):
+            if cmd[-2:] == ["list", "--all"]:
+                return CompletedProcess(
+                    cmd,
+                    0,
+                    stdout="collective-manager-overseer\n",
+                    stderr="",
+                )
+            return CompletedProcess(cmd, 0, stdout="created", stderr="")
+
+        with patch("hermes_collective.bootstrap.subprocess.run", side_effect=fake_run):
+            result = _create_crons(
+                name="overseer",
+                role="manager",
+                local_path=temp_dir,
+                profile="overseer",
+            )
+
+        assert "collective-manager-overseer" in result["skipped"]
+        assert "collective-pruning-overseer" in result["success"]

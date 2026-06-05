@@ -281,27 +281,36 @@ hermes-collective run \
 
 ### Cron Jobs
 
-Hermes cron jobs depend on Hermes Gateway. Scheduled jobs will not run unless
-Hermes Gateway is installed and running normally. Before relying on cron,
-verify your Hermes Gateway service and confirm that `hermes cron` works in the
-same profile where the job should run.
+`hermes-collective setup` creates the Hermes profile, sets it as the default
+Hermes profile, installs and starts that profile's gateway service, then
+installs the scheduled jobs directly into that profile with
+`hermes -p <profile> cron create`. The job workdir is set to the local
+collective clone, so scheduled runs load the collective repository context
+automatically.
 
-Cron jobs are created for the current Hermes profile. Create or select the
-matching profile before running `hermes-collective join` or manual
-`hermes cron create` commands.
+Hermes cron jobs depend on Hermes Gateway. Scheduled jobs will not run unless
+Hermes Gateway is installed and running normally for the profile that owns the
+jobs. Before relying on cron, verify:
+
+```bash
+hermes -p alice gateway status
+hermes -p alice cron list
+```
 
 Employee cron examples:
 
 ```bash
 # Employee daily reflection (6 PM Mon-Fri)
-hermes cron create "0 18 * * 1-5" \
+hermes -p alice cron create "0 18 * * 1-5" \
   --name collective-employee-alice \
+  --workdir ~/.hermes/collective-alice \
   --skill employee-daily \
   "Run employee-daily. Collective: ~/.hermes/collective-alice. Agent: alice."
 
 # Employee daily sync (9 AM)
-hermes cron create "0 9 * * *" \
+hermes -p alice cron create "0 9 * * *" \
   --name collective-sync-alice \
+  --workdir ~/.hermes/collective-alice \
   "cd ~/.hermes/collective-alice && git pull origin main && hermes-collective sync --repo ~/.hermes/collective-alice"
 ```
 
@@ -309,14 +318,16 @@ Manager cron examples:
 
 ```bash
 # Manager cycle (10 PM Mon-Fri)
-hermes cron create "0 22 * * 1-5" \
+hermes -p overseer cron create "0 22 * * 1-5" \
   --name collective-manager-overseer \
+  --workdir ~/.hermes/collective-overseer \
   --skill manager-cycle \
   "Run manager-cycle. Collective: ~/.hermes/collective-overseer. Agent: overseer."
 
 # Weekly pruning (Sunday 9 AM)
-hermes cron create "0 9 * * 0" \
-  --name collective-pruning \
+hermes -p overseer cron create "0 9 * * 0" \
+  --name collective-pruning-overseer \
+  --workdir ~/.hermes/collective-overseer \
   --skill collective/quality-pruning \
   "Run quality pruning. Repo: ~/.hermes/collective-overseer."
 ```
