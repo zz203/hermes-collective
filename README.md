@@ -79,7 +79,8 @@ A legacy mechanical pipeline is available via `--legacy` for environments withou
 
 ## Quick Start
 
-### 1. Install
+Install `hermes-collective` on every machine that will run a manager or employee
+agent:
 
 ```bash
 cd hermes-collective
@@ -87,38 +88,37 @@ pip install -e .
 ```
 
 Verify:
+
 ```bash
 hermes-collective --version   # → 0.1.0
 ```
 
-### 2. Initialize the Collective
+The recommended production layout is:
 
-```bash
-# Create the repository
-hermes-collective init --name my-team --repo ~/collective-repo
-
-# Push to remote (optional but recommended)
-cd ~/collective-repo
-git remote add origin git@github.com:myteam/collective.git
-git push -u origin main
+```text
+collective-repo.git    shared bare repository for push/pull
+collective-repo        manager working clone
+~/.hermes/collective-* per-employee working clones
 ```
 
-#### Self-Hosted SSH Bare Repository
+Do not run Hermes workflows directly inside the bare repository.
 
-If the manager agent runs on the same server that hosts the shared Git
-repository, use a bare repository as the shared remote and give every agent its
-own working clone. Do not run Hermes workflows directly inside the bare
-repository.
+### Manager Server Setup
 
-On the manager server:
+Run these steps on the server that hosts the shared Git repository and runs the
+manager agent.
+
+1. Create the shared bare repository:
 
 ```bash
-# 1. Create the shared bare repository
 sudo mkdir -p /srv/hermes
 sudo chown -R "$USER":"$USER" /srv/hermes
 git init --bare --initial-branch=main /srv/hermes/collective.git
+```
 
-# 2. Seed it with the Hermes Collective repository structure
+2. Seed it with the Hermes Collective repository structure:
+
+```bash
 hermes-collective init --name my-team --repo /tmp/collective-seed
 
 cd /tmp/collective-seed
@@ -126,7 +126,14 @@ git remote add origin /srv/hermes/collective.git
 git push -u origin main
 ```
 
-Register the manager with a local working clone:
+3. Create and select the manager Hermes profile:
+
+```bash
+hermes profile create overseer --clone
+hermes profile use overseer
+```
+
+4. Register the manager agent with its working clone:
 
 ```bash
 hermes-collective join \
@@ -136,9 +143,34 @@ hermes-collective join \
   --path ~/.hermes/collective-overseer
 ```
 
-Configure SSH key login for each employee machine before registering employees.
-This avoids password prompts during `git pull`, `git push`, and scheduled cron
-jobs.
+Here `--repo` is the shared bare repository, and `--path` is the manager's local
+working clone. The manager workflow should always run against `--path`.
+
+5. Verify the manager paths:
+
+```bash
+git -C /srv/hermes/collective.git rev-parse --is-bare-repository
+git -C ~/.hermes/collective-overseer rev-parse --is-bare-repository
+git -C ~/.hermes/collective-overseer remote -v
+cat ~/.hermes/collective-overseer/agents/overseer/identity.yaml
+```
+
+Expected results:
+
+```text
+/srv/hermes/collective.git        is bare: true
+~/.hermes/collective-overseer     is bare: false
+origin                            points to /srv/hermes/collective.git
+identity.yaml                     contains role: manager
+```
+
+### Employee Workstation Setup
+
+Run these steps on each employee machine. Employees do not run
+`hermes-collective init`; they only join the existing shared repository.
+
+1. Configure SSH key login to the manager server. This avoids password prompts
+during `git pull`, `git push`, and scheduled cron jobs.
 
 On the employee machine:
 
@@ -150,8 +182,8 @@ ssh-keygen -t ed25519 -C "hermes-collective-alice"
 cat ~/.ssh/id_ed25519.pub
 ```
 
-On the manager server, append the employee public key to the SSH account that
-will own or write to the shared repository:
+On the manager server, append that public key to the SSH account that owns or
+can write to the shared repository:
 
 ```bash
 mkdir -p ~/.ssh
@@ -163,8 +195,8 @@ nano ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
 ```
 
-If the server uses a host alias or non-default SSH port, configure it on the
-employee machine:
+If the server uses a host alias or non-default SSH port, configure
+`~/.ssh/config` on the employee machine:
 
 ```sshconfig
 Host collective-server
@@ -173,65 +205,92 @@ Host collective-server
   User gituser
 ```
 
-Then test passwordless access and Git access:
+2. Test passwordless SSH and Git access:
 
 ```bash
 ssh collective-server
 git ls-remote ssh://collective-server/srv/hermes/collective.git
 ```
 
-Employees connect to the same shared repository over SSH:
+3. Create and select the employee Hermes profile:
 
 ```bash
-# Test SSH and repository access first
-git ls-remote ssh://ubuntu@MANAGER_HOST/srv/hermes/collective.git
+hermes profile create alice --clone
+hermes profile use alice
+```
 
-# Register an employee workstation
+4. Register the employee agent:
+
+```bash
 hermes-collective join \
   --name alice \
   --role employee \
-  --repo ssh://ubuntu@MANAGER_HOST/srv/hermes/collective.git \
+  --repo ssh://collective-server/srv/hermes/collective.git \
   --path ~/.hermes/collective-alice
 ```
 
-Use the SSH account that owns or can write to `/srv/hermes/collective.git`.
-For a dedicated Git user, the employee URL would usually be:
+Here `--repo` is the shared bare repository over SSH, and `--path` is this
+employee's local working clone.
+
+For a dedicated Git user, the employee URL usually looks like:
 
 ```bash
 ssh://git@MANAGER_HOST/srv/hermes/collective.git
 ```
 
-### 3. Register Agents
+5. Verify the employee clone:
 
 ```bash
-# Manager (on the server)
-hermes-collective join --name overseer --repo ~/collective-repo --role manager
-
-# Employees (on each workstation)
-hermes-collective join --name alice --repo git@github.com:myteam/collective.git --role employee
-hermes-collective join --name bob   --repo git@github.com:myteam/collective.git --role employee
+git -C ~/.hermes/collective-alice remote -v
+cat ~/.hermes/collective-alice/agents/alice/identity.yaml
 ```
 
-### 4. Daily Workflows
+Expected results:
 
-**Employee (inside a Hermes session):**
+```text
+origin         points to ssh://collective-server/srv/hermes/collective.git
+identity.yaml  contains role: employee
 ```
+
+### Daily Workflows
+
+Employee, inside the employee Hermes profile:
+
+```text
 /skill collective/employee-daily
 ```
 
-**Manager — recommended (inside a Hermes session):**
-```
+Manager, inside the manager Hermes profile:
+
+```text
 /skill collective/manager-cycle
 ```
 
-This spawns subagents that use LLM reasoning for semantic dedup and quality assessment.
+The manager skill spawns subagents that use LLM reasoning for semantic dedup and
+quality assessment.
 
-**Manager — CLI fallback (no Hermes required):**
+Manager CLI fallback without Hermes subagents:
+
 ```bash
-hermes-collective run --role manager --repo ~/collective-repo --legacy
+hermes-collective run \
+  --role manager \
+  --name overseer \
+  --repo ~/.hermes/collective-overseer \
+  --legacy
 ```
 
-### 5. Cron Jobs
+### Cron Jobs
+
+Hermes cron jobs depend on Hermes Gateway. Scheduled jobs will not run unless
+Hermes Gateway is installed and running normally. Before relying on cron,
+verify your Hermes Gateway service and confirm that `hermes cron` works in the
+same profile where the job should run.
+
+Cron jobs are created for the current Hermes profile. Create or select the
+matching profile before running `hermes-collective join` or manual
+`hermes cron create` commands.
+
+Employee cron examples:
 
 ```bash
 # Employee daily reflection (6 PM Mon-Fri)
@@ -244,18 +303,22 @@ hermes cron create "0 18 * * 1-5" \
 hermes cron create "0 9 * * *" \
   --name collective-sync-alice \
   "cd ~/.hermes/collective-alice && git pull origin main && hermes-collective sync --repo ~/.hermes/collective-alice"
+```
 
+Manager cron examples:
+
+```bash
 # Manager cycle (10 PM Mon-Fri)
 hermes cron create "0 22 * * 1-5" \
   --name collective-manager-overseer \
   --skill manager-cycle \
-  "Run manager-cycle. Collective: ~/collective-repo. Agent: overseer."
+  "Run manager-cycle. Collective: ~/.hermes/collective-overseer. Agent: overseer."
 
 # Weekly pruning (Sunday 9 AM)
 hermes cron create "0 9 * * 0" \
   --name collective-pruning \
   --skill collective/quality-pruning \
-  "Run quality pruning. Repo: ~/collective-repo."
+  "Run quality pruning. Repo: ~/.hermes/collective-overseer."
 ```
 
 ## Commands
