@@ -103,6 +103,104 @@ git remote add origin git@github.com:myteam/collective.git
 git push -u origin main
 ```
 
+#### Self-Hosted SSH Bare Repository
+
+If the manager agent runs on the same server that hosts the shared Git
+repository, use a bare repository as the shared remote and give every agent its
+own working clone. Do not run Hermes workflows directly inside the bare
+repository.
+
+On the manager server:
+
+```bash
+# 1. Create the shared bare repository
+sudo mkdir -p /srv/hermes
+sudo chown -R "$USER":"$USER" /srv/hermes
+git init --bare --initial-branch=main /srv/hermes/collective.git
+
+# 2. Seed it with the Hermes Collective repository structure
+hermes-collective init --name my-team --repo /tmp/collective-seed
+
+cd /tmp/collective-seed
+git remote add origin /srv/hermes/collective.git
+git push -u origin main
+```
+
+Register the manager with a local working clone:
+
+```bash
+hermes-collective join \
+  --name overseer \
+  --role manager \
+  --repo /srv/hermes/collective.git \
+  --path ~/.hermes/collective-overseer
+```
+
+Configure SSH key login for each employee machine before registering employees.
+This avoids password prompts during `git pull`, `git push`, and scheduled cron
+jobs.
+
+On the employee machine:
+
+```bash
+# Create a key if this machine does not already have one
+ssh-keygen -t ed25519 -C "hermes-collective-alice"
+
+# Copy this public key
+cat ~/.ssh/id_ed25519.pub
+```
+
+On the manager server, append the employee public key to the SSH account that
+will own or write to the shared repository:
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+
+# Paste the employee public key as one line at the end of this file
+nano ~/.ssh/authorized_keys
+
+chmod 600 ~/.ssh/authorized_keys
+```
+
+If the server uses a host alias or non-default SSH port, configure it on the
+employee machine:
+
+```sshconfig
+Host A6000
+  HostName 10.70.155.47
+  Port 11516
+  User zhouzl
+```
+
+Then test passwordless access and Git access:
+
+```bash
+ssh A6000
+git ls-remote ssh://A6000/srv/hermes/collective.git
+```
+
+Employees connect to the same shared repository over SSH:
+
+```bash
+# Test SSH and repository access first
+git ls-remote ssh://ubuntu@MANAGER_HOST/srv/hermes/collective.git
+
+# Register an employee workstation
+hermes-collective join \
+  --name alice \
+  --role employee \
+  --repo ssh://ubuntu@MANAGER_HOST/srv/hermes/collective.git \
+  --path ~/.hermes/collective-alice
+```
+
+Use the SSH account that owns or can write to `/srv/hermes/collective.git`.
+For a dedicated Git user, the employee URL would usually be:
+
+```bash
+ssh://git@MANAGER_HOST/srv/hermes/collective.git
+```
+
 ### 3. Register Agents
 
 ```bash
