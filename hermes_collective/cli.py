@@ -182,6 +182,34 @@ def _print_profile_use_result(profile: str, profile_result: dict) -> None:
     click.echo(f"     hermes profile use {profile}")
 
 
+def _configure_cron_approvals(profile: str) -> dict:
+    """Allow profile cron jobs to auto-approve required actions."""
+    cmd = [
+        "hermes",
+        "-p", profile,
+        "config", "set",
+        "approvals.cron_mode",
+        "auto_approve",
+    ]
+    completed = _run(cmd, capture_output=True)
+    if completed.returncode == 0:
+        return {"success": True, "error": ""}
+
+    error = (completed.stderr or completed.stdout or f"exit {completed.returncode}").strip()
+    return {"success": False, "error": error}
+
+
+def _print_cron_approval_result(profile: str, approval_result: dict) -> None:
+    """Print cron approval config result and fallback command."""
+    if approval_result["success"]:
+        click.echo("   Cron approval mode set to auto_approve.")
+        return
+
+    click.echo(f"   ⚠ Could not set cron approval mode: {approval_result['error']}")
+    click.echo("   Manual fallback command:")
+    click.echo(f"     hermes -p {profile} config set approvals.cron_mode auto_approve")
+
+
 # ── setup (interactive wizard) ─────────────────────────────────────
 
 
@@ -307,7 +335,13 @@ def setup_wizard():
     profile_use_result = _use_profile(name)
     _print_profile_use_result(name, profile_use_result)
 
-    # ── Step 6: Clone and register ──
+    # ── Step 6: Configure cron approvals ──
+    click.echo()
+    click.echo("🔐 Configuring cron approvals...")
+    cron_approval_result = _configure_cron_approvals(name)
+    _print_cron_approval_result(name, cron_approval_result)
+
+    # ── Step 7: Clone and register ──
     click.echo()
     click.echo("📦 Cloning collective repository...")
 
@@ -333,14 +367,14 @@ def setup_wizard():
         click.echo(f"❌ Failed to register: {e}", err=True)
         sys.exit(1)
 
-    # ── Step 7: Setup profile gateway service ──
+    # ── Step 8: Setup profile gateway service ──
     click.echo()
     click.echo("🔌 Setting up Hermes Gateway service...")
     click.echo(f"   Installing service for Hermes profile '{name}'...")
     gateway_results = _ensure_profile_gateway_service(name)
     _print_gateway_results(name, gateway_results)
 
-    # ── Step 8: Setup cron jobs ──
+    # ── Step 9: Setup cron jobs ──
     click.echo()
     click.echo("⏰ Setting up cron jobs...")
     click.echo(f"   Creating jobs in Hermes profile '{name}'...")
@@ -385,7 +419,7 @@ def setup_wizard():
     click.echo(f"     hermes -p {name} cron list")
     click.echo(f"     hermes -p {name} cron run <job-id>")
 
-    # ── Step 9: Done ──
+    # ── Step 10: Done ──
     click.echo()
     click.echo("══════════════════════════════════════════")
     click.echo(f"  ✅ {name} ({role}) is ready!")
@@ -397,6 +431,8 @@ def setup_wizard():
     click.echo()
     if cron_results["failed"]:
         click.echo("  Some cron jobs still need manual setup; see the commands above.")
+    elif not cron_approval_result["success"]:
+        click.echo("  Gateway and cron jobs were configured, but cron approval setup failed.")
     elif not profile_use_result["success"]:
         click.echo("  Gateway and cron jobs were configured, but default profile switching failed.")
     elif gateway_results["failed"]:

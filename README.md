@@ -282,11 +282,12 @@ hermes-collective run \
 ### Cron Jobs
 
 `hermes-collective setup` creates the Hermes profile, sets it as the default
-Hermes profile, installs and starts that profile's gateway service, then
-installs the scheduled jobs directly into that profile with
-`hermes -p <profile> cron create`. The job workdir is set to the local
-collective clone, so scheduled runs load the collective repository context
-automatically.
+Hermes profile, configures cron approvals with
+`hermes -p <profile> config set approvals.cron_mode auto_approve`, installs and
+starts that profile's gateway service, then installs the scheduled jobs directly
+into that profile with `hermes -p <profile> cron create`. The job workdir is set
+to the local collective clone, so scheduled runs load the collective repository
+context automatically.
 
 Hermes cron jobs depend on Hermes Gateway. Scheduled jobs will not run unless
 Hermes Gateway is installed and running normally for the profile that owns the
